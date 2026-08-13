@@ -261,8 +261,11 @@ jobs:
           echo "publisher=${GITHUB_REPOSITORY_OWNER}" >> "$GITHUB_OUTPUT"
 
       - name: Install easybot-plugin-sign
-        run: cargo install --git https://github.com/EasyIndie/EasyBot.git \
-          --tag "${{ steps.meta.outputs.sdk-tag }}" --locked easybot-plugin-sign
+        # 必须是 block scalar（`run: |`）——plain scalar 会把换行折叠成空格，
+        # 使 `\ --tag` 变成单个词 ` --tag`，cargo 误判为包名而报错。
+        run: |
+          cargo install --git https://github.com/EasyIndie/EasyBot.git \
+            --tag "${{ steps.meta.outputs.sdk-tag }}" --locked easybot-plugin-sign
 
       - name: Download build artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4
