@@ -143,7 +143,9 @@ jobs:
             https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
           mkdir -p "$HOME/zig"
           tar -xJf /tmp/zig.tar.xz -C "$HOME/zig"
+          # GITHUB_PATH 只在下一步生效；本步内要立刻用 zig，需同时 export PATH
           echo "$HOME/zig/zig-x86_64-linux-0.16.0" >> "$GITHUB_PATH"
+          export PATH="$HOME/zig/zig-x86_64-linux-0.16.0:$PATH"
           zig version
 
       - name: Build (musl — static linking)
