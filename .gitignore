@@ -1,0 +1,13 @@
+# Rust 构建产物
+/target
+**/*.rs.bk
+
+# 凭据（严禁提交；发布 CI 有 gitleaks 扫描，含密钥即阻断）
+.env
+*.env
+!*.env.example
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/

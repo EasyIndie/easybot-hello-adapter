@@ -1,0 +1,16 @@
+# ─────────────────────────────────────────────────────────────
+# 本地联调 [patch]：把 SDK 指向本地主仓 checkout（可选）
+# ─────────────────────────────────────────────────────────────
+# Cargo.toml 里 SDK 依赖走 git tag（v0.0.34），首次拉取要 clone 整个主仓，较慢；
+# 开发迭代时可用 [patch] 让它直接用你本地的 EasyBot checkout，秒级重编。
+#
+# 用法：
+#   1. 取消下方 [patch] 块的注释，把 `path` 改成你本地的 EasyBot 路径。
+#   2. 开发完成、准备发布前，**必须注释回**——[patch] 路径是本机绝对路径，
+#     提交/CI/他人 clone 后无法解析，且发布要基于 git tag 的 SDK。
+#
+# 为什么可行：patch 的 SDK 与其 path 依赖的 easybot-core 一起来自本地 checkout，
+# 版本必须与 git tag 上的一致（本地 checkout 在 v0.0.34 时二者即一致）。
+
+# [patch."https://github.com/EasyIndie/EasyBot"]
+# easybot-plugin-sdk = { path = "/Users/joker/Developer/EasyBot/crates/easybot-plugin-sdk" }

@@ -1,0 +1,20 @@
+# Hello Adapter 插件清单
+#
+# 构建产物复制到宿主 `plugins/easybot-hello-adapter/` 后，宿主以此清单识别插件：
+#   name        安装名（也是平台名，须与 src/lib.rs 的 `platform_name()` 一致）
+#   sdk_version 编译所用 SDK 的 ABI 版本（须等于 SDK 的 EASYBOT_PLUGIN_ABI_VERSION，当前为 1）
+#
+# 注意：通过市场 `easybot plugin install` 安装时，宿主会依据 Release 的
+# easybot-plugin.json **自动合成**本清单；这里的手写清单用于本地 dev 手动落位。
+#
+# 本地手动安装（dev）：
+#   mkdir -p ~/.easybot/plugins/easybot-hello-adapter
+#   cp target/release/libeasybot_hello_adapter.{so,dylib} ~/.easybot/plugins/easybot-hello-adapter/
+#   cp plugin.yaml ~/.easybot/plugins/easybot-hello-adapter/
+
+name: "easybot-hello-adapter"
+display_name: "Hello Adapter"
+description: "An EasyBot adapter plugin named easybot-hello-adapter (官方入门样例)."
+version: "0.1.0"
+sdk_version: 1
+author: "EasyBot Contributors"

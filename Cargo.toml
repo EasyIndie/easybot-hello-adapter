@@ -1,0 +1,58 @@
+# EasyBot 插件工程（独立仓库，作者无需 clone 主仓）
+#
+# 命名规则：插件名 = 仓库名 = package name = `easybot-xxx`（官方前缀）。
+#   - cdylib 产物名：`libeasybot_hello_adapter.{so,dylib,dll}`（Rust 用下划线连 crate 名）
+#   - platform_name() / plugin.yaml `name` / 市场中的 name 均为 `easybot-hello-adapter`
+#
+# SDK 依赖走 **git tag**（作者端编译独立）：
+#   easybot-plugin-sdk = { git = ".../EasyBot", tag = "v0.0.34", package = "easybot-plugin-sdk" }
+#   - `testing` feature（PluginTestHost）只放进 [dev-dependencies]，插件产物本身不携带。
+#   - 本地联调把 SDK 指向本地主仓 checkout 的 [patch] 见 `.cargo/config.toml`。
+#   - 更换 tag 前先确认该版本已包含你需要的 SDK API 与 ABI（见 docs/plugin-development-guide.md）。
+
+[package]
+name = "easybot-hello-adapter"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+description = "EasyBot 官方插件入门样例：最小可跑的 echo 适配器（教学用）"
+license = "GPL-3.0-only"
+publish = false
+
+[lib]
+# cdylib：宿主用 libloading 进程内 dlopen 加载的共享库。
+# rlib：让 `cargo test` 能链接本 crate（integration tests 需要）。
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# SDK 本体（无 testing feature → 产物不携带测试宿主）。
+easybot-plugin-sdk = { git = "https://github.com/EasyIndie/EasyBot", tag = "v0.0.34", package = "easybot-plugin-sdk" }
+# 序列化/日志：真实适配器通常还需要 `serde = { version = "1", features = ["derive"] }`
+#（序列化平台请求体），本样例只用 serde_json 的 json! 宏，故不引入 serde。
+serde_json = "1"
+tracing = "0.1"
+# ⚠ 关键（FFI 分配器契约）：插件通过 FFI 与宿主收发 String/Vec/Value 等
+# 带堆所有权的值，两侧**必须共用同一全局分配器**。宿主 EasyBot 主程序因此
+# **必须使用默认 System 分配器**（不能带自定义 global_allocator 如 mimalloc——
+# 插件在进程内 dlopen，若宿主用 mimalloc 而插件用系统 malloc，宿主分配的堆内存
+# 被插件的 Drop 用系统 free 释放 → SIGABRT；若插件也各自静态链接一份 mimalloc，
+# 进程内出现两套 mimalloc 堆，析构时 abandoned-page 自旋 → 死锁）。
+# 插件这里**不要**声明自定义 #[global_allocator]，保持默认（= System）。
+# 详见 docs/plugin-development-guide.md「FFI 分配器契约」。
+
+[dev-dependencies]
+# testing feature 只在测试目标编译：提供 PluginTestHost（内存宿主离线测试）。
+easybot-plugin-sdk = { git = "https://github.com/EasyIndie/EasyBot", tag = "v0.0.34", package = "easybot-plugin-sdk", features = ["testing"] }
+# PluginTestHost 与宿主共享 tokio 运行时（#[tokio::test]）；recv_event 需 time。
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+
+# 与主仓 workspace 对齐的发布 profile（FFI 关键约束）：
+#   - `panic = "abort"`：panic 若越过 extern "C" FFI 边界解栈是 UB，abort 保证定义行为。
+#   - `lto = "fat"` + `codegen-units = 1`：减小 cdylib 体积。
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+debug = 0
