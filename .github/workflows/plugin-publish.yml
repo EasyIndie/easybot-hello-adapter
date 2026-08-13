@@ -133,17 +133,17 @@ jobs:
       # cargo-zigbuild 0.19+ 不再捆绑 zig，需单独安装（否则报 "Failed to find zig"）。
       # 直接下载 ziglang.org 官方稳定版（自包含，不依赖 install-action 对 zig 的支持版本）。
       # 两个 musl target 都在 ubuntu-latest (x86_64) 上构建，共用同一份 zig。
+      # 注意：必须整目录解压后把目录加入 PATH——zig 的 `zig cc` 需要相邻的 lib/ 目录
+      # 定位 std 库；只拷 zig 二进制会报 "unable to find zig installation directory"。
       - name: Install zig (required by cargo-zigbuild)
         if: ${{ matrix.zigbuild }}
         run: |
           set -euo pipefail
           curl -fsSL --retry 5 --retry-connrefused -o /tmp/zig.tar.xz \
             https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
-          tar -xJf /tmp/zig.tar.xz -C /tmp
-          mkdir -p "$HOME/.local/bin"
-          cp /tmp/zig-x86_64-linux-0.16.0/zig "$HOME/.local/bin/zig"
-          chmod +x "$HOME/.local/bin/zig"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          mkdir -p "$HOME/zig"
+          tar -xJf /tmp/zig.tar.xz -C "$HOME/zig"
+          echo "$HOME/zig/zig-x86_64-linux-0.16.0" >> "$GITHUB_PATH"
           zig version
 
       - name: Build (musl — static linking)
