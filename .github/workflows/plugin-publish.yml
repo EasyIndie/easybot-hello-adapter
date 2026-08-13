@@ -130,12 +130,21 @@ jobs:
         with:
           tool: cargo-zigbuild
 
-      # cargo-zigbuild 0.19+ 不再捆绑 zig，需单独安装（否则报 "Failed to find zig"）
+      # cargo-zigbuild 0.19+ 不再捆绑 zig，需单独安装（否则报 "Failed to find zig"）。
+      # 直接下载 ziglang.org 官方稳定版（自包含，不依赖 install-action 对 zig 的支持版本）。
+      # 两个 musl target 都在 ubuntu-latest (x86_64) 上构建，共用同一份 zig。
       - name: Install zig (required by cargo-zigbuild)
         if: ${{ matrix.zigbuild }}
-        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2
-        with:
-          tool: zig
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 --retry-connrefused -o /tmp/zig.tar.xz \
+            https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
+          tar -xJf /tmp/zig.tar.xz -C /tmp
+          mkdir -p "$HOME/.local/bin"
+          cp /tmp/zig-x86_64-linux-0.16.0/zig "$HOME/.local/bin/zig"
+          chmod +x "$HOME/.local/bin/zig"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          zig version
 
       - name: Build (musl — static linking)
         if: ${{ matrix.zigbuild }}
@@ -148,6 +157,8 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Stage plugin artifacts
+        # Windows runner 默认 shell 是 PowerShell，必须显式用 bash（脚本是 bash 语法）
+        shell: bash
         env:
           EXT: ${{ matrix.extension }}
           PREFIX: ${{ matrix.prefix }}
@@ -191,12 +202,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Install gitleaks
-        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2
-        with:
-          tool: gitleaks
+      - name: Install gitleaks (license-free binary)
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 --retry-connrefused -o /tmp/gitleaks.tar.gz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          tar -xzf /tmp/gitleaks.tar.gz -C /usr/local/bin gitleaks
+          chmod +x /usr/local/bin/gitleaks
+          gitleaks version
 
-      - name: Gitleaks scan (license-free)
+      - name: Gitleaks scan
         run: gitleaks detect --source . --redact
 
   # ── 3. 签名 + 组装 easybot-plugin.json + 发布 ──
