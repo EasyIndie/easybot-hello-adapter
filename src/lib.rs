@@ -8,18 +8,10 @@
 //!
 //! 构建 / 测试（SDK 走 git tag，作者无需 clone 主仓）：
 //!   cargo test     # 单元 + PluginTestHost 离线测试（无需启动真实网关）
-//!   cargo build --release  # 产出自包含 cdylib
+//!   cargo build --release  # 产出自包含可执行文件（进程外插件）
 
-// declare_plugin! 展开为 `#[unsafe(no_mangle)]` FFI 入口；默认 deny unsafe_code，
-// 此处豁免（对齐 easybot-plugin-sdk 自身的处理）。
-#![allow(unsafe_code)]
-
-// ⚠ FFI 分配器契约：插件**不要**声明自定义 #[global_allocator]，保持默认
-// （= System）。插件通过 FFI 与宿主收发 String/Vec/Value 的堆所有权，
-// 两侧必须共用同一全局分配器；宿主 EasyBot 主程序因此也不得使用自定义
-// 分配器（见 docs/plugin-development-guide.md「FFI 分配器契约」）。
-// 若宿主声明了 mimalloc 而插件用系统 malloc → 交叉 free → SIGABRT；
-// 若插件自己静态链接 mimalloc → 进程内两套 mimalloc 堆 → 析构死锁。
+// 进程外插件：本 crate 只实现 `PlatformAdapter`；进程入口在 `src/main.rs`
+// （`easybot_plugin_sdk::run_plugin!`）。无 FFI、无 unsafe、无分配器约束。
 
 use easybot_plugin_sdk::prelude::*;
 use std::sync::Arc;
@@ -36,7 +28,7 @@ pub struct HelloAdapter {
 }
 
 impl HelloAdapter {
-    /// 构造器（`declare_plugin!` 的入口）。
+    /// 构造器（供 `run_plugin!` 使用）。
     ///
     /// 若平台需要非默认初始化，可在此注入 HTTP client 等依赖——测试用 wiremock
     /// 替换（传输可注入方法论，见 docs/plugin-methodology.md）。
@@ -205,7 +197,5 @@ impl PlatformAdapter for HelloAdapter {
     }
 }
 
-// 声明插件入口点（FFI）。宿主经 `easybot_plugin_create` 创建适配器实例。
-// 库文件名 = `lib{package-name}.{so|dylib|dll}`（Rust 用下划线连接 crate 名），
-// 即 `libeasybot_hello_adapter.{so,dylib,dll}`。
-declare_plugin!(HelloAdapter, HelloAdapter::new);
+// 入口见 `src/main.rs`：
+//     easybot_plugin_sdk::run_plugin!(HelloAdapter, HelloAdapter::new);

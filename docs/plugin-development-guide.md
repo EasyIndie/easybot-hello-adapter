@@ -34,27 +34,31 @@
 
 ## 1. 插件是什么（5 分钟理解模型）
 
-插件是一个 **Rust cdylib 动态库**（Linux `.so` / macOS `.dylib` / Windows `.dll`），由宿主 EasyBot 主程序 **进程内 dlopen** 加载，通过 FFI 边界交互：
+插件是一个 **Rust 可执行文件**（Linux/macOS 无扩展名，Windows `.exe`），由宿主 EasyBot 主程序 **作为子进程启动**，双方通过 **stdin/stdout 逐行 JSON**（`easybot-plugin-protocol`）通信：
 
 ```
 宿主 EasyBot（主程序）
-  └─ PluginLoader
-       └─ dlopen → libeasybot_xxx.{so|dylib|dll}
-            └─ easybot_plugin_create() → Box<dyn PlatformAdapter>  （FFI）
-                 └─ 注册进 AdapterRegistry → 与内置适配器同等对待
+  └─ PluginLoader（扫描 plugin.yaml，定位入口可执行文件）
+       └─ spawn 子进程 → easybot-hello-adapter
+            └─ 握手 handshake → 校验协议版本
+                 └─ init / connect / send / ...（JSON 请求-响应）
+                      └─ 事件经 stdout 通知回传宿主 → 注册进 AdapterRegistry
 ```
 
-**FFI 边界上只有三个 C 导出函数**（由 `declare_plugin!` 宏生成，你不用手写）：
+**协议上只有一组 JSON 方法**（由 `run_plugin!` 宏在插件侧实现，你不用手写）：
 
-| 导出函数 | 作用 |
+| 方法 | 作用 |
 |---|---|
-| `easybot_abi_version()` | 返回 SDK ABI 版本，宿主加载时比对 |
-| `easybot_plugin_create()` | 创建适配器实例，返回 `*mut c_void` |
-| `easybot_plugin_destroy(ptr)` | 销毁实例（幂等） |
+| `handshake` | 返回平台名 / 协议版本 / 能力清单，宿主据此校验 |
+| `init` / `connect` / `disconnect` | 驱动 `PlatformAdapter` 生命周期 |
+| `send` / `send_media` / … | 对应 trait 方法调用 |
+| `event`（通知，插件→宿主） | 插件发布到事件总线的事件回传 |
 
-接口本身不是 C，而是 Rust trait `PlatformAdapter`——宿主拿到 `Box<dyn PlatformAdapter>` 后像调用普通 Rust 对象一样调用 `init/connect/send/...`。**好处**：你写的是普通 Rust；**代价**：两侧必须遵守几条 ABI 硬约束（见下）。
+接口本身是 Rust trait `PlatformAdapter`——你只实现 trait，`run_plugin!` 负责把它暴露成协议服务端。**好处**：无 FFI、无 `unsafe`、无分配器约束；插件崩溃不影响宿主（**崩溃隔离**）。
 
-**理解模型一句话**：插件 = 一个实现了 `PlatformAdapter` trait 的 cdylib，加载后被当作内置适配器运行。就这么简单。
+**理解模型一句话**：插件 = 一个实现了 `PlatformAdapter` trait 的可执行文件，被宿主当作内置适配器运行。就这么简单。
+
+> ⚠ **进程外 ≠ 安全沙箱**：v1 只做崩溃隔离，子进程默认继承宿主用户权限（可读写文件/网络）。生产隔离靠容器化。
 
 ### 生命周期状态机
 
@@ -65,14 +69,17 @@ init(config) → connect() → send()/... → disconnect()
 
 `init` 只解析配置、存凭据（**不建网络连接**）；`connect` 才建立连接、启动后台任务。
 
-### ABI 硬约束速览（详细见第 8 节）
+### 协议硬约束速览（详细见第 8 节）
 
 | 约束 | 原因 | 处置 |
 |---|---|---|
-| `panic = "abort"` | panic 越过 extern "C" 边界解栈是 UB | release profile 已设 |
-| **与宿主共用默认分配器** | String/Vec 的堆所有权跨 FFI 转移 | 宿主不得用自定义 allocator（第 8.1 节，最重要的坑） |
-| `sdk_version` 必须等于 SDK 常量 | ABI 布局兼容 | 编译期即确定 |
+| 入口必须是 `run_plugin!` | 宿主按协议发起握手，插件须应答 | `src/main.rs` 一行 |
+| `command` 指向入口可执行文件 | 宿主据此 spawn 子进程 | `plugin.yaml`（Windows 含 `.exe`） |
+| 协议版本匹配（`PROTOCOL_VERSION`） | 报文结构兼容 | 握手时宿主校验，不匹配即拒绝 |
+| `sdk_version` 必须等于 SDK 常量 | 安装期兼容性预检 | 编译期即确定 |
 | 命名 `easybot-xxx` | 会话 key / 路由 / 市场统一 | 见第 2 节 |
+
+> 旧 cdylib 时代的「FFI 分配器契约」「`panic = "abort"`」等约束**已不适用**（无 FFI、无跨堆所有权）。
 
 ---
 
@@ -84,7 +91,7 @@ init(config) → connect() → send()/... → disconnect()
 |---|---|---|
 | 仓库名 | `easybot-xxx` | `EasyIndie/easybot-hello-adapter` |
 | `Cargo.toml [package].name` | `easybot-xxx` | `easybot-hello-adapter` |
-| cdylib 产物名 | Rust 用下划线连接 crate 名 → `libeasybot_xxx.{so,dylib,dll}` | `libeasybot_hello_adapter.dylib` |
+| 可执行产物名 | 与包名一致（连字符保留；Windows 带 `.exe`） | `easybot-hello-adapter` |
 | `plugin.yaml` `name` | `easybot-xxx` | `"easybot-hello-adapter"` |
 | `platform_name()` | `easybot-xxx` | `"easybot-hello-adapter"` |
 | 市场安装名 | `easybot-xxx` | `easybot plugin install EasyIndie/easybot-hello-adapter`（发布者为 GitHub 组织/用户） |
@@ -109,30 +116,33 @@ edition = "2024"
 publish = false                       # 不走 crates.io
 
 [lib]
-crate-type = ["cdylib", "rlib"]       # cdylib 供宿主 dlopen；rlib 让 cargo test 能链接
+crate-type = ["rlib"]                 # rlib 让 cargo test 与 src/main.rs 能链接本 crate
+
+[[bin]]
+name = "easybot-hello-adapter"        # 入口可执行文件名 = 宿主 spawn 的名字
+path = "src/main.rs"
 
 [dependencies]
-easybot-plugin-sdk = { git = "https://github.com/EasyIndie/EasyBot", tag = "v0.0.34", package = "easybot-plugin-sdk" }
+easybot-plugin-sdk = { git = "https://github.com/EasyIndie/EasyBot", tag = "v0.0.42", package = "easybot-plugin-sdk" }
 serde_json = "1"
 tracing = "0.1"
 
 [dev-dependencies]
-easybot-plugin-sdk = { git = ".../EasyBot", tag = "v0.0.34", package = "easybot-plugin-sdk", features = ["testing"] }
+easybot-plugin-sdk = { git = ".../EasyBot", tag = "v0.0.42", package = "easybot-plugin-sdk", features = ["testing"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 
 [profile.release]
 opt-level = 3
-lto = "fat"            # 减小 cdylib 体积
+lto = "fat"            # 减小产物体积
 codegen-units = 1
 strip = "symbols"
-panic = "abort"        # ABI 硬约束：panic 不越过 FFI 边界
 ```
 
 要点：
 
-- **SDK 走 git tag 依赖**（`git = ... + tag = "v0.0.34"`）：插件作者端**无需 clone 主仓库**，cargo 自动拉取；tag 固定版本保证 ABI 一致。**不要**用 crates.io（SDK 尚未发布）。
+- **SDK 走 git tag 依赖**（`git = ... + tag = "v0.0.42"`）：插件作者端**无需 clone 主仓库**，cargo 自动拉取；tag 固定版本保证 ABI 一致。**不要**用 crates.io（SDK 尚未发布）。
 - **`testing` feature 只放 `[dev-dependencies]`**：`PluginTestHost` 是测试宿主，绝不能进插件产物本体。
-- **`panic = "abort"`**：cdylib 内 panic 若跨 FFI unwind 是 UB，abort 保证定义行为（崩溃也比内存破坏好定位）。
+- **`[[bin]]`**：入口可执行文件名即宿主 spawn 的名字，须与 `plugin.yaml` 的 `command` 一致。
 
 ### 3.2 `.cargo/config.toml`（本地联调 [patch]，可选）
 
@@ -153,6 +163,7 @@ description: "An EasyBot adapter plugin named easybot-hello-adapter (官方入�
 version: "0.1.0"
 sdk_version: 1                    # = SDK 的 EASYBOT_PLUGIN_ABI_VERSION
 author: "EasyBot Contributors"
+command: "easybot-hello-adapter"  # 入口可执行文件（Windows 须写 easybot-hello-adapter.exe）
 ```
 
 宿主以此清单识别插件（市场安装时由宿主根据 `easybot-plugin.json` **自动合成**此清单；手动安装才自己写）。
@@ -164,17 +175,15 @@ author: "EasyBot Contributors"
 
 ### 3.5 `.github/workflows/plugin-publish.yml`
 
-发布者 CI 模板（从主仓复制，自包含、只引用公开 action）：6-target 交叉编译 → gitleaks 扫密钥 → ed25519 签名 → 组装 `easybot-plugin.json` → 发 Release。见第 10 节。
+发布者 CI 模板（从主仓复制，自包含、只引用公开 action）：6-target 交叉编译**可执行文件** → gitleaks 扫密钥 → ed25519 签名 → 组装 `easybot-plugin.json` → 发 Release。见第 10 节。
 
 ---
 
 ## 4. 核心：实现 `PlatformAdapter`
 
-`src/lib.rs` 是插件本体，结构固定：
+`src/lib.rs` 是插件本体，结构固定（**无 `unsafe`、无 FFI**）：
 
 ```rust
-#![allow(unsafe_code)]              // declare_plugin! 展开 FFI；对齐 SDK 自身处理
-
 use easybot_plugin_sdk::prelude::*;
 use std::sync::Arc;
 
@@ -220,13 +229,20 @@ impl PlatformAdapter for HelloAdapter {
 
     // ... disconnect / state / health / get_chat_info / runtime_config / status_summary
 }
+```
 
-declare_plugin!(HelloAdapter, HelloAdapter::new);
+入口在 `src/main.rs`（一行）：
+
+```rust
+use easybot_hello_adapter::HelloAdapter;
+
+easybot_plugin_sdk::run_plugin!(HelloAdapter, HelloAdapter::new);
 ```
 
 要点：
 
-- **`declare_plugin!(Struct, Constructor)` 每个插件且只能调用一次**，生成三个 FFI 导出。
+- **`run_plugin!(Struct, Constructor)` 每个插件且只能调用一次**，放在 `src/main.rs`；
+  它建 tokio 运行时、应答协议握手、驱动 trait 生命周期、把事件回传给宿主。
 - **`set_event_bus`**：入站事件（消息/回调）经它注入的 `EventBus` 发布给宿主；`PluginTestHost` 测试也用它断言。
 - **`send()` 是演示 echo 的核心**：宿主调用 → 插件发布 `message.inbound` 事件 → 回环验证（第 7 节）。
 - **错误分类**：网络层失败用 `GatewayError::Transient`（瞬态→重连退避），凭据被拒用 `Permanent`（立即停用），业务失败用 `SendError`。分类贯穿健康监测的重试/停用决策。这是最容易写错、影响最大的细节之一，进阶见第 9 节。
@@ -235,7 +251,7 @@ declare_plugin!(HelloAdapter, HelloAdapter::new);
 
 ## 5. 测试：先离线，再上真宿主
 
-测试金字塔（按成本从低到高）：**单元 → PluginTestHost → wiremock → e2e**。日常开发 90% 的工作量在头两层，离线秒级跑。
+测试金字塔（按成本从低到高）：**单元 → PluginTestHost（内存）→ ProcessPluginTestHost（进程外）→ wiremock → e2e**。日常开发 90% 的工作量在前两层，离线秒级跑。
 
 ### 5.1 单元测试（`tests/unit.rs`）
 
@@ -309,21 +325,25 @@ async fn lifecycle_and_send_roundtrip() {
 ### 5.3 跑法
 
 ```bash
-cargo test    # 单元 + PluginTestHost，全部离线
+cargo test    # 单元 + PluginTestHost + ProcessPluginTestHost，全部离线
 ```
+
+> `tests/process_test.rs` 用 `ProcessPluginTestHost` 把插件作为**真实子进程**启动，
+> 走完整 stdio 协议（最贴近生产路径）。cargo 会自动提供 `CARGO_BIN_EXE_easybot-hello-adapter`，
+> 无需手动找产物路径。
 
 ---
 
 ## 6. 构建与本地联调
 
 ```bash
-# 构建 release cdylib（自包含，作者无需 clone 主仓）
+# 构建 release 可执行文件（自包含，作者无需 clone 主仓）
 cargo build --release
-# 产物：target/release/libeasybot_hello_adapter.{so|dylib|dll}
+# 产物：target/release/easybot-hello-adapter（Windows: .exe）
 
 # 手动装入宿主插件目录（dev 联调）
 mkdir -p ~/.easybot/plugins/easybot-hello-adapter
-cp target/release/libeasybot_hello_adapter.dylib ~/.easybot/plugins/easybot-hello-adapter/
+cp target/release/easybot-hello-adapter ~/.easybot/plugins/easybot-hello-adapter/
 cp plugin.yaml ~/.easybot/plugins/easybot-hello-adapter/
 ```
 
@@ -371,10 +391,12 @@ curl -s -X POST http://localhost:8080/api/v1/messages/send \
 
 - [ ] `/api/v1/plugins` 中插件已加载（load_error = null）
 - [ ] `/api/v1/adapters` 中 Connected
-- [ ] `send` 返回 `message_id`（证明宿主→插件 FFI 双向传递了带堆所有权的值）
+- [ ] `send` 返回 `message_id`（证明宿主→插件 请求-响应全链路可用）
 - [ ] echo 事件 `source == "easybot-hello-adapter"`（证明插件→宿主事件总线）
 
-> **"send 返回正常"是插件 ABI 健康度的终极测试**：它意味着跨 FFI 的 String/Vec 所有权转移没有触发分配器冲突（第 8.1 节）。任何分配器不匹配都会在这一步崩溃或死锁。
+> **"send 返回正常"是插件健康度的终极测试**：它意味着插件进程完成了
+> `spawn → 握手 → init → connect → 请求-响应` 全链路。任一步失败都会在这里暴露
+> （宿主日志会给出明确原因，如「握手超时」「进程退出」）。
 
 ---
 
@@ -382,39 +404,30 @@ curl -s -X POST http://localhost:8080/api/v1/messages/send \
 
 这是本指南**最有价值**的部分——每一条都是真实开发中遇到并解决的。
 
-### 8.1 ⚠ FFI 分配器契约（最深的坑，务必先看）
+### 8.1 为什么是「进程外」而不是动态库
 
-**症状 1 —— SIGABRT**：宿主 `send` 调用插件时进程崩溃，报错：
+**旧架构（已废弃）**：插件编译为 cdylib，宿主 `dlopen` 进程内加载。它有一个致命前提——
+**宿主二进制必须带动态加载器**。而 EasyBot 官方 Linux 发行版是 **musl 全静态**
+（`statically linked`，无 `INTERP`/`NEEDED`），静态二进制**没有动态加载器**，
+`dlopen` 在任何情况下都不可能成功——**与插件自己怎么编译无关**（零依赖的 `.so` 也打不开）。
 
-```
-___BUG_IN_CLIENT_OF_LIBMALLOC_POINTER_BEING_FREED_WAS_NOT_ALLOCATED
-```
+**现架构**：插件是**独立可执行文件**，宿主 spawn 子进程，双方走 stdin/stdout JSON 协议。
 
-**症状 2 —— 死锁**：给插件加上 mimalloc 后不再崩溃，但宿主 teardown 时卡死，主线程卡在：
-
-```
-drop_in_place<Runtime> → __rust_dealloc → mi_free → mi_bfield_atomic_clear_once_set → _mi_prim_thread_yield  （自旋）
-```
-
-**根因**：插件通过 FFI 与宿主收发 `SendTextParams`/`SendResult` 等**带堆所有权的值**（String/Vec/Value）。这些值经常"宿主构造、插件 Drop"（或反向）。Rust 要求**谁的分配器分配、谁的 Drop 释放**。而宿主原来用 mimalloc 做全局分配器、插件用系统 malloc：
-
-| 宿主分配器 | 插件分配器 | 结果 |
+| | 旧（cdylib + dlopen） | 现（进程外子进程） |
 |---|---|---|
-| mimalloc | 系统 malloc（默认） | 宿主分配的值被插件用系统 free 释放 → **SIGABRT** |
-| mimalloc | 插件自己静态链接一份 mimalloc | 进程内两套 mimalloc 堆，析构 abandoned-page 自旋 → **死锁** |
+| 静态宿主 | ❌ 不可能加载 | ✅ 正常工作 |
+| 插件崩溃 | ❌ 拖垮整个宿主进程 | ✅ 崩溃隔离，宿主重连（重新 spawn） |
+| FFI/分配器 | ❌ 两侧必须共用同一全局分配器 | ✅ 无 FFI、无共享堆 |
+| ABI 约束 | ❌ 必须 `panic=abort`、禁用自定义 allocator | ✅ 无 |
+| 沙箱 | ❌ 与宿主同权限 | ⚠️ **仍是宿主用户权限**（v1 只做崩溃隔离，非安全沙箱） |
 
-**唯一正确解**：**两侧共用同一全局分配器**。插件的 `send()` 必须能安全 Drop 宿主传入的 `SendTextParams`，反之亦然。因此：
+**结论**：跨平台一致，静态宿主可用，且不再有 FFI 类陷阱。生产隔离仍靠容器化。
 
-- **插件侧**：**不要**声明自定义 `#[global_allocator]`，保持默认（= 系统分配器）。
-- **宿主侧**：宿主**必须**使用默认系统分配器，**不得**引入 mimalloc 等自定义 `#[global_allocator]`（`bin/Cargo.toml` 有注释警示防止回归）。
+### 8.2 panic 不会拖垮宿主
 
-**在你的插件里如何避免**：什么都不用做——只要不声明 `#[global_allocator]` 即可。真正的雷在宿主侧；若宿主已含 mimalloc（旧版本），升级宿主到不含自定义分配器的版本。
-
-> 这是为什么本样例的 `src/lib.rs` 顶部有一大段注释、`Cargo.toml` 有一大段注释——它们不是废话，是防止后人"优化"时重新踩进去。
-
-### 8.2 `panic = "abort"` 是硬要求
-
-panic 越过 extern "C" FFI 边界 unwinding 是 UB。release profile 已设 `panic = "abort"`：插件内 panic → 进程直接终止（可定位），而不是内存破坏。**不要**改成 unwind。
+进程外插件内 panic → 插件进程退出（宿主日志可见其 stderr）→ 宿主健康监测器把该适配器
+标记为 `Down` 并按退避重连（重新 spawn）。**无需** `panic = "abort"`：vi 边界不存在，
+解栈是安全的。
 
 ### 8.3 SDK git tag 与本地 [patch] 版本必须一致
 
@@ -424,9 +437,11 @@ panic 越过 extern "C" FFI 边界 unwinding 是 UB。release profile 已设 `pa
 
 `.cargo/config.toml` 的 `[patch]` 是本机绝对路径，提交/CI/他人 clone 后无法解析。**发布前注释回**，让构建回落到 git tag 依赖。这是发布流程里的标准动作。
 
-### 8.5 产物命名：Rust 用下划线连 crate 名
+### 8.5 产物命名：可执行文件名 = bin 名
 
-crate `easybot-hello-adapter`（kebab）→ cdylib `libeasybot_hello_adapter.{so|dylib|dll}`（下划线）。签名、`easybot-plugin.json` 的 `library` 字段、手动安装都按此文件名。
+crate `easybot-hello-adapter`（kebab）→ 可执行文件 `easybot-hello-adapter`（连字符保留；
+Windows 加 `.exe`）。`plugin.yaml` 的 `command`、`easybot-plugin.json` 的 `command` 字段、
+签名对象、手动安装都按此文件名。
 
 ### 8.6 `platform_name()` 与 `plugin.yaml` 的 `name` 必须一致
 
@@ -436,7 +451,7 @@ crate `easybot-hello-adapter`（kebab）→ cdylib `libeasybot_hello_adapter.{so
 
 | 场景 | 手段 |
 |---|---|
-| 插件逻辑错误 | ⚠ **插件 `tracing` 不转发到宿主日志**（dylib 有独立 tracing 注册表，宿主订阅不到；SDK 暂无日志桥）。dev 调试直接用 `eprintln!`（与宿主共享进程 stderr，出现在宿主控制台/日志重定向里）。真实适配器可把诊断信息经 `SendResult`/`GatewayError` 或事件总线回传给宿主 |
+| 插件逻辑错误 | 插件 stderr **直接继承宿主 stderr** → `tracing`/`eprintln!` 的输出会出现在宿主控制台与日志里（进程外带来的调试便利）。也可把诊断信息经 `SendResult`/`GatewayError` 或事件总线回传给宿主 |
 | 加载失败 | `/api/v1/plugins` 返回 load_error；`easybot plugin inspect <name>` 转储清单/签名/错误 |
 | 崩溃（SIGABRT/SIGSEGV） | 优先怀疑分配器（8.1）；用 `lldb easybot` 复现，backtrace 定位 `drop_in_place` 栈帧 |
 | 死锁 | 优先怀疑双 mimalloc（8.1）；`sample easybot <pid>` 看各线程栈 |
@@ -496,12 +511,12 @@ easybot plugin install EasyIndie/easybot-hello-adapter
 
 ```bash
 # 构建
-cargo build --release                      # 产出自包含 cdylib
-cargo test                                 # 单元 + PluginTestHost 离线测试
+cargo build --release                      # 产出自包含可执行文件
+cargo test                                 # 单元 + 测试宿主（内存 + 进程外）离线测试
 
 # 手动装入宿主（dev）
 mkdir -p ~/.easybot/plugins/easybot-hello-adapter
-cp target/release/libeasybot_hello_adapter.dylib ~/.easybot/plugins/easybot-hello-adapter/
+cp target/release/easybot-hello-adapter ~/.easybot/plugins/easybot-hello-adapter/
 cp plugin.yaml ~/.easybot/plugins/easybot-hello-adapter/
 
 # 观察
