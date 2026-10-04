@@ -17,7 +17,7 @@
 name: "easybot-hello-adapter"
 display_name: "Hello Adapter"
 description: "An EasyBot adapter plugin named easybot-hello-adapter (官方入门样例)."
-version: "0.1.0"
+version: "0.2.0"
 sdk_version: 1
 author: "EasyBot Contributors"
 command: "easybot-hello-adapter"

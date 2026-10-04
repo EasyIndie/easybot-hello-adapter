@@ -16,7 +16,7 @@
 
 [package]
 name = "easybot-hello-adapter"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.94"
 description = "EasyBot 官方插件入门样例：最小可跑的 echo 适配器（教学用）"
